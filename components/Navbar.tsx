@@ -1,0 +1,4 @@
+'use client';
+import Link from 'next/link';
+import {useEffect,useState} from 'react';
+export default function Navbar(){const[count,setCount]=useState(0);useEffect(()=>{const load=()=>{try{const c=JSON.parse(localStorage.getItem('debest-cart')||'[]');setCount(c.reduce((s:any,x:any)=>s+x.quantity,0))}catch{}};load();window.addEventListener('storage',load);return()=>window.removeEventListener('storage',load)},[]);return <header style={{borderBottom:'1px solid #e7e9ed',position:'sticky',top:0,zIndex:20,background:'#fff'}}><div className="container" style={{height:72,display:'flex',alignItems:'center',justifyContent:'space-between'}}><Link href="/" style={{fontSize:22,fontWeight:800,color:'#0f766e'}}>DEBEST Stationaries</Link><nav style={{display:'flex',gap:20,alignItems:'center'}}><Link href="/">Shop</Link><Link href="/cart">Cart ({count})</Link><Link href="/login" className="btn btn-secondary">Account</Link></nav></div></header>}
