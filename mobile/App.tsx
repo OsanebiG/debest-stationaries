@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Image,
-  TextInput,
-  Alert,
   ActivityIndicator,
+  Alert,
+  TextInput,
+  Image,
+  StyleSheet,
 } from 'react-native';
 import { SvgUri } from 'react-native-svg';
 import { StatusBar } from 'expo-status-bar';
@@ -204,26 +204,50 @@ const imageMap: Record<string, any> = {
       {
         text: 'Continue',
         onPress: () => {
-          setActiveScreen('Orders');
+          setActiveScreen('Checkout');;
         },
       },
     ]
   );
 };
 
-  const ProductCard = ({ product }: { product: Product }) => (
+const productImages: Record<string, string> = {
+  'notebook-a5':
+    'https://s.alicdn.com/@sc04/kf/H72c5ab0aade84dc1afa67205d1072227m/Wholesale-Customized-Small-Side-spiral-Pocket-Note-Book-Notepad-with-Coated-Paper-Hard-Cover-and-Custom-Logo-Printing.png',
+
+  'blue-pen-pack':
+    'https://www.nextparty.com.au/cdn/shop/files/ballpoint-pens-10pk-blue-ink-colour-484922.jpg?v=1721878996',
+
+  'marker-set':
+    'https://cld-assets.dick-blick.com/image/upload/f_auto/q_auto/v1748373976/21338-1009-3ww-l.jpg',
+
+  'office-file':
+    'https://kingjim.com/cdn/shop/products/2274b.jpg?v=1719551202',
+
+  'sticky-notes':
+    'https://multimedia.3m.com/mws/media/2236809J/post-it-super-sticky-notes-654-15ssasstjp.jpg?width=506',
+
+  'ruler-30cm':
+    'https://www.schooldepot.co.nz/cdn/shop/products/Celco-Ruler-30-cm-Clear-Plastic.jpg?v=1687405585&width=1445',
+};
+  const ProductCard = ({ product }: { product: Product }) => {
+  const imageUrl = productImages[product.id];
+
+  return (
     <View style={styles.productCard}>
- {product.image ? (
-  <SvgUri
-    uri={product.image}
-    width="100%"
-    height={140}
-  />
-) : (
-  <View style={styles.imagePlaceholder}>
-    <Text style={styles.placeholderText}>DEBEST</Text>
-  </View>
-)}
+      {imageUrl ? (
+        <Image
+          source={{ uri: imageUrl }}
+          style={styles.productImage}
+          resizeMode="contain"
+        />
+      ) : (
+        <View style={styles.imagePlaceholder}>
+          <Text style={styles.placeholderText}>
+            DEBEST
+          </Text>
+        </View>
+      )}
 
       <Text style={styles.productCategory}>
         {product.category}
@@ -251,7 +275,7 @@ const imageMap: Record<string, any> = {
       </TouchableOpacity>
     </View>
   );
-
+};
   const renderHome = () => (
     <ScrollView
       showsVerticalScrollIndicator={false}
@@ -603,16 +627,31 @@ const imageMap: Record<string, any> = {
               key={item.id}
               style={styles.cartItem}
             >
-              {item.image ? (
-                <Image
-                  source={{ uri: item.image }}
-                  style={styles.cartImage}
-                />
-              ) : (
-                <View style={styles.cartImagePlaceholder}>
-                  <Text>📦</Text>
-                </View>
-              )}
+            {item.image ? (
+  typeof item.image === 'string' ? (
+    item.image.endsWith('.svg') ? (
+      <SvgUri
+        uri={item.image}
+        width={80}
+        height={80}
+      />
+    ) : (
+      <Image
+        source={{ uri: item.image }}
+        style={styles.cartImage}
+      />
+    )
+  ) : (
+    <Image
+      source={item.image}
+      style={styles.cartImage}
+    />
+  )
+) : (
+  <View style={styles.cartImagePlaceholder}>
+    <Text>📦</Text>
+  </View>
+)}
 
               <View style={styles.cartItemInfo}>
                 <Text
