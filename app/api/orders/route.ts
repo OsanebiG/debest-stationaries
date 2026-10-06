@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export async function POST(request: Request) {
   try {
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
       (item: { productId: string }) => item.productId
     );
 
-    const { data: products, error: productsError } = await supabase
+    const { data: products, error: productsError } = await supabaseAdmin
       .from('products')
       .select('id, name, price')
       .in('id', productIds);
@@ -61,10 +61,10 @@ export async function POST(request: Request) {
 
     const orderItems = items.map(
       (item: { productId: string; quantity: number }) => {
-        const product = products.find(
-          (p) => p.id === item.productId
-        );
-
+       const product = products.find(
+  (p: { id: string; name: string; price: number }) =>
+    p.id === item.productId
+);
         if (!product) {
           throw new Error(
             `Product not found: ${item.productId}`
@@ -92,7 +92,7 @@ export async function POST(request: Request) {
       0
     );
 
-    const { data: order, error: orderError } = await supabase
+    const { data: order, error: orderError } = await supabaseAdmin
       .from('orders')
       .insert({
         customer_name: customerName,
@@ -130,12 +130,12 @@ export async function POST(request: Request) {
       })
     );
 
-    const { error: itemsError } = await supabase
+    const { error: itemsError } = await supabaseAdmin
       .from('order_items')
       .insert(itemsToInsert);
 
     if (itemsError) {
-      await supabase
+      await supabaseAdmin
         .from('orders')
         .delete()
         .eq('id', order.id);
@@ -181,7 +181,7 @@ export async function GET(request: Request) {
       );
     }
 
-    const { data: orders, error: ordersError } = await supabase
+    const { data: orders, error: ordersError } = await supabaseAdmin
       .from('orders')
       .select('*')
       .eq('email', email)
@@ -205,7 +205,7 @@ export async function GET(request: Request) {
     );
 
     const { data: orderItems, error: itemsError } =
-      await supabase
+      await supabaseAdmin
         .from('order_items')
         .select('*')
         .in('order_id', orderIds);
@@ -236,7 +236,7 @@ export async function GET(request: Request) {
       const {
         data: productData,
         error: productsError,
-      } = await supabase
+      } = await supabaseAdmin
         .from('products')
         .select('id, name')
         .in('id', productIds);
