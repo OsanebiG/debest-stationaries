@@ -12,7 +12,8 @@ import {
 } from 'react-native';
 import { SvgUri } from 'react-native-svg';
 import { StatusBar } from 'expo-status-bar';
-
+import AuthScreen from './components/AuthScreen';
+import { supabase } from './lib/supabase';
 type Product = {
   id: string;
   name: string;
@@ -24,6 +25,33 @@ type Product = {
 type CartItem = Product & {
   quantity: number;
 };
+type OrderItem = {
+  id: string;
+  order_id: string;
+  product_id: string;
+  quantity: number;
+  unit_price: number;
+  subtotal: number;
+  product?: {
+    id: string;
+    name: string;
+  } | null;
+};
+
+type Order = {
+  id: string;
+  customer_name: string;
+  email: string;
+  phone_number: string;
+  delivery_address: string;
+  city: string;
+  state: string;
+  country: string;
+  total_amount: number;
+  status: string;
+  created_at: string;
+  items: OrderItem[];
+};
 
 type Tab =
   | 'Home'
@@ -31,9 +59,12 @@ type Tab =
   | 'Cart'
   | 'Orders'
   | 'Account'
-  | 'Checkout';
+  | 'Checkout'
+  | 'OrderDetails';
 
 const API_URL = 'https://debest-stationaries.vercel.app/api/products';
+const ORDERS_API_URL =
+  'https://debest-stationaries.vercel.app/api/orders';
 
 const formatNaira = (amount: number) =>
   `₦${amount.toLocaleString('en-NG')}`;
@@ -41,6 +72,7 @@ const formatNaira = (amount: number) =>
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('Home');
   const [activeScreen, setActiveScreen] = useState('Home');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
@@ -50,49 +82,76 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
+  const [orders, setOrders] = useState<Order[]>([]);
+const [ordersLoading, setOrdersLoading] = useState(false);
+const [ordersError, setOrdersError] = useState('');
+const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
-  useEffect(() => {
-    const fetchProducts = async () => {
-      try {
-        setLoading(true);
+useEffect(() => {
+  const checkSession = async () => {
+    const { data } = await supabase.auth.getSession();
+    setIsAuthenticated(!!data.session);
+  };
 
-        const response = await fetch(API_URL);
+  checkSession();
 
-        if (!response.ok) {
-          throw new Error('Failed to load products');
-        }
+  const {
+    data: { subscription },
+  } = supabase.auth.onAuthStateChange((_event, session) => {
+    setIsAuthenticated(!!session);
+  });
 
-        const data = await response.json();
+  return () => {
+    subscription.unsubscribe();
+  };
+}, []);
 
-const imageMap: Record<string, any> = {
-  'notebook-a5': require('./assets/images/notebook.svg'),
-  'blue-pen-pack': require('./assets/images/pen.svg'),
-  'office-file': require('./assets/images/file.svg'),
-  'marker-set': require('./assets/images/marker.svg'),
-  'sticky-notes': require('./assets/images/sticky.svg'),
-  'ruler-30cm': require('./assets/images/ruler.svg'),
-};
-    const formattedProducts: Product[] = data.map((item: any) => ({
-  id: item.id,
-  name: item.name,
-  price: Number(item.price),
-  category: item.category,
-  image: imageMap[item.id] || item.image_url || '',
-}));
+useEffect(() => {
+  const fetchProducts = async () => {
+    try {
+      setLoading(true);
+      setError('');
 
+      const response = await fetch(API_URL);
 
-        setProducts(formattedProducts);
-        setError('');
-      } catch (err) {
-        console.error(err);
-        setError('Unable to load products.');
-      } finally {
-        setLoading(false);
+      if (!response.ok) {
+        const errorText = await response.text();
+
+        throw new Error(
+          `Products API error ${response.status}: ${errorText}`
+        );
       }
-    };
 
-    fetchProducts();
-  }, []);
+      const data = await response.json();
+
+      if (!Array.isArray(data)) {
+        throw new Error('Invalid products response from API');
+      }
+
+      const formattedProducts: Product[] = data.map((item: any) => ({
+        id: item.id,
+        name: item.name,
+        price: Number(item.price),
+        category: item.category || 'Other',
+        image: productImages[item.id] || item.image_url || '',
+      }));
+
+      setProducts(formattedProducts);
+    } catch (err) {
+      console.error('PRODUCT FETCH ERROR:', err);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to load products.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  fetchProducts();
+}, []);
 
   const cartCount = useMemo(
     () => cart.reduce((total, item) => total + item.quantity, 0),
@@ -183,7 +242,7 @@ const imageMap: Record<string, any> = {
     );
   };
 
-  const handleCheckout = () => {
+ const handleCheckout = () => {
   if (cart.length === 0) {
     Alert.alert(
       'Cart is empty',
@@ -191,24 +250,10 @@ const imageMap: Record<string, any> = {
     );
     return;
   }
+
   setActiveScreen('Checkout');
   
-  Alert.alert(
-    'Checkout',
-    `Your order total is ${formatNaira(cartTotal)}.`,
-    [
-      {
-        text: 'Cancel',
-        style: 'cancel',
-      },
-      {
-        text: 'Continue',
-        onPress: () => {
-          setActiveScreen('Checkout');;
-        },
-      },
-    ]
-  );
+
 };
 
 const productImages: Record<string, string> = {
@@ -513,7 +558,12 @@ const productImages: Record<string, string> = {
       <TouchableOpacity
   style={styles.checkoutButton}
   onPress={async () => {
-    if (!customerName || !customerPhone || !deliveryAddress) {
+    if (
+  !customerName ||
+  !customerEmail ||
+  !customerPhone ||
+  !deliveryAddress
+) {
       Alert.alert(
         'Incomplete Details',
         'Please fill in all delivery details.'
@@ -531,7 +581,7 @@ const productImages: Record<string, string> = {
           },
           body: JSON.stringify({
             customerName,
-            email: '',
+            email: customerEmail,
             phoneNumber: customerPhone,
             deliveryAddress,
             city: 'Lagos',
@@ -733,55 +783,307 @@ const productImages: Record<string, string> = {
     </ScrollView>
   );
 
-  const renderOrders = () => (
-    <ScrollView
-      showsVerticalScrollIndicator={false}
-      contentContainerStyle={styles.scrollContent}
-    >
-      <View style={styles.pageHeader}>
-        <Text style={styles.pageTitle}>
-          Orders
-        </Text>
+  const fetchOrders = async () => {
+  if (!customerEmail) {
+    setOrders([]);
+    return;
+  }
 
-        <Text style={styles.pageSubtitle}>
-          Track your stationery orders.
+  try {
+    setOrdersLoading(true);
+    setOrdersError('');
+
+    const response = await fetch(
+      `${ORDERS_API_URL}?email=${encodeURIComponent(customerEmail)}`
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to load orders');
+    }
+
+    setOrders(data);
+  } catch (error) {
+    console.error('Fetch orders error:', error);
+    setOrdersError('Unable to load your orders.');
+  } finally {
+    setOrdersLoading(false);
+  }
+};
+useEffect(() => {
+  if (activeScreen === 'Orders') {
+    fetchOrders();
+  }
+}, [activeScreen, customerEmail]);
+
+const renderOrders = () => (
+  <ScrollView
+    showsVerticalScrollIndicator={false}
+    contentContainerStyle={styles.scrollContent}
+  >
+    <View style={styles.pageHeader}>
+      <Text style={styles.pageTitle}>My Orders</Text>
+
+      <Text style={styles.pageSubtitle}>
+        Track your stationery orders.
+      </Text>
+    </View>
+
+    {ordersLoading ? (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#0f766e" />
+
+        <Text style={styles.loadingText}>
+          Loading your orders...
         </Text>
       </View>
-
+    ) : ordersError ? (
       <View style={styles.emptyState}>
-        <Text style={styles.emptyIcon}>
-          📦
+        <Text style={styles.emptyIcon}>⚠️</Text>
+
+        <Text style={styles.emptyTitle}>
+          Unable to load orders
         </Text>
+
+        <Text style={styles.emptyText}>
+          {ordersError}
+        </Text>
+
+        <TouchableOpacity
+          style={styles.primaryButton}
+          onPress={fetchOrders}
+        >
+          <Text style={styles.primaryButtonText}>
+            Try Again
+          </Text>
+        </TouchableOpacity>
+      </View>
+    ) : orders.length === 0 ? (
+      <View style={styles.emptyState}>
+        <Text style={styles.emptyIcon}>📦</Text>
 
         <Text style={styles.emptyTitle}>
           No orders yet
         </Text>
 
         <Text style={styles.emptyText}>
-          Your completed orders will appear here.
+          Your orders will appear here after you place an order.
         </Text>
 
         <TouchableOpacity
           style={styles.primaryButton}
-          onPress={() => setActiveTab('Shop')}
+          onPress={() => setActiveScreen('Shop')}
         >
           <Text style={styles.primaryButtonText}>
             Shop Now
           </Text>
         </TouchableOpacity>
       </View>
+    ) : (
+      <View>
+        {orders.map((order) => (
+          <TouchableOpacity
+            key={order.id}
+            style={styles.orderCard}
+            activeOpacity={0.8}
+            onPress={() => {
+              setSelectedOrder(order);
+              setActiveScreen('OrderDetails');
+            }}
+          >
+            <View style={styles.orderCardTop}>
+              <View>
+                <Text style={styles.orderNumber}>
+                  Order #{order.id.slice(0, 8)}
+                </Text>
+
+                <Text style={styles.orderDate}>
+                  {new Date(
+                    order.created_at
+                  ).toLocaleDateString('en-NG')}
+                </Text>
+              </View>
+
+              <View style={styles.statusBadge}>
+                <Text style={styles.statusText}>
+                  {order.status}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.orderDivider} />
+
+            <Text style={styles.orderItemsText}>
+              {order.items.length}{' '}
+              {order.items.length === 1 ? 'item' : 'items'}
+            </Text>
+
+            <View style={styles.orderCardBottom}>
+              <Text style={styles.orderTotalLabel}>
+                Total
+              </Text>
+
+              <Text style={styles.orderTotal}>
+                {formatNaira(Number(order.total_amount))}
+              </Text>
+            </View>
+
+            <Text style={styles.viewOrderText}>
+              View Order →
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    )}
+  </ScrollView>
+);
+
+const renderOrderDetails = () => {
+  if (!selectedOrder) {
+    return (
+      <View style={styles.emptyState}>
+        <Text style={styles.emptyTitle}>
+          Order not found
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={styles.scrollContent}
+    >
+      <TouchableOpacity
+        style={styles.backButton}
+        onPress={() => setActiveScreen('Orders')}
+      >
+        <Text style={styles.backButtonText}>
+          ← Back to Orders
+        </Text>
+      </TouchableOpacity>
+
+      <View style={styles.pageHeader}>
+        <Text style={styles.pageTitle}>
+          Order Details
+        </Text>
+
+        <Text style={styles.pageSubtitle}>
+          Order #{selectedOrder.id.slice(0, 8)}
+        </Text>
+      </View>
+
+      <View style={styles.orderDetailsCard}>
+        <View style={styles.detailRow}>
+          <Text style={styles.detailLabel}>
+            Status
+          </Text>
+
+          <Text style={styles.detailValue}>
+            {selectedOrder.status}
+          </Text>
+        </View>
+
+        <View style={styles.detailRow}>
+          <Text style={styles.detailLabel}>
+            Order Date
+          </Text>
+
+          <Text style={styles.detailValue}>
+            {new Date(
+              selectedOrder.created_at
+            ).toLocaleDateString('en-NG')}
+          </Text>
+        </View>
+      </View>
+
+      <Text style={styles.sectionTitle}>
+        Items
+      </Text>
+
+      <View style={styles.orderDetailsCard}>
+        {selectedOrder.items.map((item) => (
+          <View
+            key={item.id}
+            style={styles.detailItem}
+          >
+            <View style={styles.detailItemInfo}>
+              <Text style={styles.detailItemName}>
+                {item.product?.name || 'Product'}
+              </Text>
+
+              <Text style={styles.detailItemQuantity}>
+                Qty: {item.quantity}
+              </Text>
+            </View>
+
+            <Text style={styles.detailItemPrice}>
+              {formatNaira(Number(item.subtotal))}
+            </Text>
+          </View>
+        ))}
+      </View>
+
+      <Text style={styles.sectionTitle}>
+        Delivery
+      </Text>
+
+      <View style={styles.orderDetailsCard}>
+        <Text style={styles.deliveryText}>
+          {selectedOrder.delivery_address}
+        </Text>
+
+        <Text style={styles.deliveryText}>
+          {selectedOrder.city}, {selectedOrder.state}
+        </Text>
+
+        <Text style={styles.deliveryText}>
+          {selectedOrder.country}
+        </Text>
+
+        <Text style={styles.deliveryText}>
+          Phone: {selectedOrder.phone_number}
+        </Text>
+
+        <Text style={styles.deliveryText}>
+          Email: {selectedOrder.email}
+        </Text>
+      </View>
+
+      <View style={styles.grandTotalCard}>
+        <Text style={styles.grandTotalLabel}>
+          Order Total
+        </Text>
+
+        <Text style={styles.grandTotal}>
+          {formatNaira(
+            Number(selectedOrder.total_amount)
+          )}
+        </Text>
+      </View>
     </ScrollView>
   );
+};
 
-  const renderAccount = () => (
+const renderAccount = () => {
+  if (!isAuthenticated) {
+    return (
+      <AuthScreen
+        onAuthenticated={() => {
+          setIsAuthenticated(true);
+        }}
+      />
+    );
+  }
+
+  return (
     <ScrollView
       showsVerticalScrollIndicator={false}
       contentContainerStyle={styles.scrollContent}
     >
       <View style={styles.pageHeader}>
-        <Text style={styles.pageTitle}>
-          Account
-        </Text>
+        <Text style={styles.pageTitle}>Account</Text>
 
         <Text style={styles.pageSubtitle}>
           Manage your DEBEST account.
@@ -790,9 +1092,7 @@ const productImages: Record<string, string> = {
 
       <View style={styles.profileCard}>
         <View style={styles.profileIcon}>
-          <Text style={styles.profileIconText}>
-            👤
-          </Text>
+          <Text style={styles.profileIconText}>👤</Text>
         </View>
 
         <View>
@@ -801,60 +1101,37 @@ const productImages: Record<string, string> = {
           </Text>
 
           <Text style={styles.profileSubtitle}>
-            Sign in to manage your account and orders.
+            You are signed in.
           </Text>
         </View>
       </View>
 
-      <TouchableOpacity
-        style={styles.accountOption}
-      >
-        <Text style={styles.accountOptionIcon}>
-          👤
-        </Text>
-
+      <TouchableOpacity style={styles.accountOption}>
+        <Text style={styles.accountOptionIcon}>👤</Text>
         <Text style={styles.accountOptionText}>
           Personal Information
         </Text>
-
-        <Text style={styles.arrow}>
-          ›
-        </Text>
+        <Text style={styles.arrow}>›</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity
-        style={styles.accountOption}
-      >
-        <Text style={styles.accountOptionIcon}>
-          📦
-        </Text>
-
+      <TouchableOpacity style={styles.accountOption}>
+        <Text style={styles.accountOptionIcon}>📦</Text>
         <Text style={styles.accountOptionText}>
           My Orders
         </Text>
-
-        <Text style={styles.arrow}>
-          ›
-        </Text>
+        <Text style={styles.arrow}>›</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity
-        style={styles.accountOption}
-      >
-        <Text style={styles.accountOptionIcon}>
-          ⚙️
-        </Text>
-
+      <TouchableOpacity style={styles.accountOption}>
+        <Text style={styles.accountOptionIcon}>⚙️</Text>
         <Text style={styles.accountOptionText}>
           Settings
         </Text>
-
-        <Text style={styles.arrow}>
-          ›
-        </Text>
+        <Text style={styles.arrow}>›</Text>
       </TouchableOpacity>
     </ScrollView>
   );
+};
 
   const renderScreen = () => {
     switch (activeScreen) {
@@ -869,6 +1146,9 @@ const productImages: Record<string, string> = {
 
       case 'Orders':
         return renderOrders();
+        
+     case 'OrderDetails':
+       return renderOrderDetails();
 
       case 'Account':
         return renderAccount();
@@ -1395,6 +1675,16 @@ const styles = StyleSheet.create({
     color: '#111827',
   },
 
+  grandTotalCard: {
+  backgroundColor: '#0f766e',
+  borderRadius: 16,
+  padding: 18,
+  marginBottom: 30,
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+},
+
   grandTotal: {
     fontSize: 20,
     fontWeight: '900',
@@ -1592,4 +1882,155 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '900',
   },
+    orderCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+
+  orderCardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+
+  orderNumber: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+  },
+
+  orderDate: {
+    fontSize: 13,
+    color: '#6b7280',
+    marginTop: 5,
+  },
+
+  statusBadge: {
+    backgroundColor: '#e6f5f2',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+
+  statusText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0f766e',
+    textTransform: 'capitalize',
+  },
+
+  orderDivider: {
+    height: 1,
+    backgroundColor: '#e5e7eb',
+    marginVertical: 14,
+  },
+
+  orderItemsText: {
+    fontSize: 14,
+    color: '#6b7280',
+  },
+
+  orderCardBottom: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+
+  orderTotalLabel: {
+    fontSize: 14,
+    color: '#6b7280',
+  },
+
+  orderTotal: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+  },
+
+  viewOrderText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0f766e',
+    marginTop: 14,
+  },
+
+  backButton: {
+    marginBottom: 16,
+  },
+
+  backButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0f766e',
+  },
+
+  orderDetailsCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 18,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+
+  detailLabel: {
+    fontSize: 14,
+    color: '#6b7280',
+  },
+
+  detailValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#111827',
+  },
+
+  detailItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+
+  detailItemInfo: {
+    flex: 1,
+    paddingRight: 12,
+  },
+
+  detailItemName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
+  },
+
+  detailItemQuantity: {
+    fontSize: 13,
+    color: '#6b7280',
+    marginTop: 4,
+  },
+
+  detailItemPrice: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#111827',
+  },
+
+  deliveryText: {
+    fontSize: 14,
+    color: '#374151',
+    marginBottom: 8,
+  },
+  
 });
