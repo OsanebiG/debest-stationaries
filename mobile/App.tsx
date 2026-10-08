@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { SvgUri } from 'react-native-svg';
 import { StatusBar } from 'expo-status-bar';
+import * as WebBrowser from 'expo-web-browser';
 import AuthScreen from './components/AuthScreen';
 import { supabase } from './lib/supabase';
 type Product = {
@@ -62,9 +63,13 @@ type Tab =
   | 'Checkout'
   | 'OrderDetails';
 
-const API_URL = 'https://debest-stationaries.vercel.app/api/products';
-const ORDERS_API_URL =
-  'https://debest-stationaries.vercel.app/api/orders';
+const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_BASE_URL || 'https://debest-stationaries.vercel.app';
+
+const API_URL = `${API_BASE_URL}/api/products`;
+const ORDERS_API_URL = `${API_BASE_URL}/api/orders`;
+const PAYSTACK_INIT_URL = `${API_BASE_URL}/api/paystack/initialize`;
+const PAYSTACK_VERIFY_URL = `${API_BASE_URL}/api/paystack/verify`;
 
 const formatNaira = (amount: number) =>
   `₦${amount.toLocaleString('en-NG')}`;
@@ -91,6 +96,9 @@ useEffect(() => {
   const checkSession = async () => {
     const { data } = await supabase.auth.getSession();
     setIsAuthenticated(!!data.session);
+    if (data.session?.user?.email) {
+      setCustomerEmail(data.session.user.email);
+    }
   };
 
   checkSession();
@@ -99,6 +107,9 @@ useEffect(() => {
     data: { subscription },
   } = supabase.auth.onAuthStateChange((_event, session) => {
     setIsAuthenticated(!!session);
+    if (session?.user?.email) {
+      setCustomerEmail(session.user.email);
+    }
   });
 
   return () => {
@@ -556,79 +567,96 @@ const productImages: Record<string, string> = {
       </View>
 
       <TouchableOpacity
-  style={styles.checkoutButton}
-  onPress={async () => {
-    if (
-  !customerName ||
-  !customerEmail ||
-  !customerPhone ||
-  !deliveryAddress
-) {
-      Alert.alert(
-        'Incomplete Details',
-        'Please fill in all delivery details.'
-      );
-      return;
-    }
+        style={styles.checkoutButton}
+        onPress={async () => {
+          if (
+            !customerName ||
+            !customerEmail ||
+            !customerPhone ||
+            !deliveryAddress
+          ) {
+            Alert.alert(
+              'Incomplete Details',
+              'Please fill in all delivery details.'
+            );
+            return;
+          }
 
-    try {
-      const response = await fetch(
-        'https://debest-stationaries.vercel.app/api/orders',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            customerName,
-            email: customerEmail,
-            phoneNumber: customerPhone,
-            deliveryAddress,
-            city: 'Lagos',
-            state: 'Lagos',
-            country: 'Nigeria',
-            items: cart.map((item) => ({
-              productId: item.id,
-              quantity: item.quantity,
-            })),
-          }),
-        }
-      );
+          try {
+            const initRes = await fetch(PAYSTACK_INIT_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                customerName,
+                email: customerEmail,
+                phoneNumber: customerPhone,
+                deliveryAddress,
+                city: 'Lagos',
+                state: 'Lagos',
+                country: 'Nigeria',
+                items: cart.map((item) => ({
+                  productId: item.id,
+                  quantity: item.quantity,
+                })),
+              }),
+            });
 
-      const data = await response.json();
+            const initData = await initRes.json();
+            if (!initRes.ok || !initData.authorization_url) {
+              throw new Error(
+                initData.error || 'Failed to initialize Paystack payment'
+              );
+            }
 
-      if (!response.ok) {
-        throw new Error(
-          data.error || 'Failed to create order'
-        );
-      }
+            // Open Paystack URL in WebBrowser
+            await WebBrowser.openAuthSessionAsync(
+              initData.authorization_url,
+              'debest://checkout/callback'
+            );
 
-      setCart([]);
-      setCustomerName('');
-      setCustomerPhone('');
-      setDeliveryAddress('');
-      setActiveScreen('Orders');
+            // Verify payment server-side
+            const verifyRes = await fetch(
+              `${PAYSTACK_VERIFY_URL}?reference=${encodeURIComponent(
+                initData.reference
+              )}`
+            );
+            const verifyData = await verifyRes.json();
 
-      Alert.alert(
-        'Order Successful 🎉',
-        `Your order has been placed successfully.\n\nOrder total: ${formatNaira(
-          data.totalAmount
-        )}`
-      );
-    } catch (error) {
-      console.error('Checkout error:', error);
+            if (verifyRes.ok && verifyData.success) {
+              setCart([]);
+              setCustomerName('');
+              setCustomerPhone('');
+              setDeliveryAddress('');
+              fetchOrders();
+              setActiveScreen('Orders');
 
-      Alert.alert(
-        'Checkout Failed',
-        'We could not place your order. Please try again.'
-      );
-    }
-  }}
->
-  <Text style={styles.checkoutText}>
-    Place Order
-  </Text>
-</TouchableOpacity>
+              Alert.alert(
+                'Order Paid & Placed 🎉',
+                `Your payment was successful.\nOrder total: ${formatNaira(
+                  initData.totalAmount
+                )}`
+              );
+            } else {
+              Alert.alert(
+                'Payment Status',
+                'If payment was completed, your order will update shortly.'
+              );
+              fetchOrders();
+              setActiveScreen('Orders');
+            }
+          } catch (error) {
+            console.error('Checkout error:', error);
+            Alert.alert(
+              'Checkout Failed',
+              error instanceof Error ? error.message : 'Could not complete checkout.'
+            );
+          }
+        }}
+      >
+        <Text style={styles.checkoutText}>
+          Pay with Paystack
+        </Text>
+      </TouchableOpacity>
     </View>
   </ScrollView>
 );
@@ -1097,24 +1125,19 @@ const renderAccount = () => {
 
         <View>
           <Text style={styles.profileTitle}>
-            Welcome to DEBEST
+            {customerEmail ? customerEmail.split('@')[0] : 'Welcome to DEBEST'}
           </Text>
 
           <Text style={styles.profileSubtitle}>
-            You are signed in.
+            {customerEmail || 'Signed in'}
           </Text>
         </View>
       </View>
 
-      <TouchableOpacity style={styles.accountOption}>
-        <Text style={styles.accountOptionIcon}>👤</Text>
-        <Text style={styles.accountOptionText}>
-          Personal Information
-        </Text>
-        <Text style={styles.arrow}>›</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity style={styles.accountOption}>
+      <TouchableOpacity
+        style={styles.accountOption}
+        onPress={() => setActiveScreen('Orders')}
+      >
         <Text style={styles.accountOptionIcon}>📦</Text>
         <Text style={styles.accountOptionText}>
           My Orders
@@ -1122,10 +1145,18 @@ const renderAccount = () => {
         <Text style={styles.arrow}>›</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.accountOption}>
-        <Text style={styles.accountOptionIcon}>⚙️</Text>
+      <TouchableOpacity
+        style={styles.accountOption}
+        onPress={async () => {
+          await supabase.auth.signOut();
+          setIsAuthenticated(false);
+          setCustomerEmail('');
+          Alert.alert('Signed Out', 'You have been signed out.');
+        }}
+      >
+        <Text style={styles.accountOptionIcon}>🚪</Text>
         <Text style={styles.accountOptionText}>
-          Settings
+          Sign Out
         </Text>
         <Text style={styles.arrow}>›</Text>
       </TouchableOpacity>

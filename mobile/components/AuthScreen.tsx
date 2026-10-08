@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -9,6 +9,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import * as WebBrowser from 'expo-web-browser';
+import * as Linking from 'expo-linking';
+import { makeRedirectUri } from 'expo-auth-session';
 
 const supabase = (() => {
   try {
@@ -23,10 +26,20 @@ const supabase = (() => {
           data: { session: null },
           error: { message: 'Supabase is not configured.' },
         }),
+        signInWithOAuth: async () => ({
+          data: { url: null },
+          error: { message: 'Supabase is not configured.' },
+        }),
+        exchangeCodeForSession: async () => ({
+          data: { session: null },
+          error: { message: 'Supabase is not configured.' },
+        }),
       },
     };
   }
 })();
+
+WebBrowser.maybeCompleteAuthSession();
 
 type Props = {
   onAuthenticated: () => void;
@@ -37,10 +50,134 @@ export default function AuthScreen({ onAuthenticated }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+
+  const redirectTo = makeRedirectUri({
+    scheme: 'debest',
+    path: 'auth/callback',
+  });
+
+  useEffect(() => {
+    const handleDeepLink = async ({ url }: { url: string }) => {
+      try {
+        const parsed = Linking.parse(url);
+        const code =
+          typeof parsed.queryParams?.code === 'string'
+            ? parsed.queryParams.code
+            : null;
+
+        if (!code) {
+          return;
+        }
+
+        setGoogleLoading(true);
+
+        const { data, error } =
+          await supabase.auth.exchangeCodeForSession(code);
+
+        if (error) {
+          Alert.alert('Google login failed', error.message);
+          return;
+        }
+
+        if (data.session) {
+          onAuthenticated();
+        }
+      } catch (error) {
+        console.error('Google callback error:', error);
+        Alert.alert(
+          'Google login failed',
+          'We could not complete Google sign in.'
+        );
+      } finally {
+        setGoogleLoading(false);
+      }
+    };
+
+    const subscription = Linking.addEventListener(
+      'url',
+      handleDeepLink
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, [onAuthenticated]);
+
+  const handleGoogleLogin = async () => {
+    setGoogleLoading(true);
+
+    try {
+      const { data, error } =
+        await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo,
+          },
+        });
+
+      if (error) {
+        Alert.alert('Google login failed', error.message);
+        return;
+      }
+
+      if (!data?.url) {
+        Alert.alert(
+          'Google login failed',
+          'Supabase did not return a login URL.'
+        );
+        return;
+      }
+
+      const result =
+        await WebBrowser.openAuthSessionAsync(
+          data.url,
+          redirectTo
+        );
+
+      if (result.type === 'success' && result.url) {
+        const parsed = Linking.parse(result.url);
+
+        const code =
+          typeof parsed.queryParams?.code === 'string'
+            ? parsed.queryParams.code
+            : null;
+
+        if (code) {
+          const { data: sessionData, error: sessionError } =
+            await supabase.auth.exchangeCodeForSession(code);
+
+          if (sessionError) {
+            Alert.alert(
+              'Google login failed',
+              sessionError.message
+            );
+            return;
+          }
+
+          if (sessionData.session) {
+            onAuthenticated();
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Google login error:', error);
+
+      Alert.alert(
+        'Google login failed',
+        'Please try again.'
+      );
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
 
   const handleAuth = async () => {
     if (!email.trim() || !password.trim()) {
-      Alert.alert('Missing information', 'Please enter your email and password.');
+      Alert.alert(
+        'Missing information',
+        'Please enter your email and password.'
+      );
       return;
     }
 
@@ -56,10 +193,11 @@ export default function AuthScreen({ onAuthenticated }: Props) {
 
     try {
       if (isLogin) {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
-        });
+        const { error } =
+          await supabase.auth.signInWithPassword({
+            email: email.trim(),
+            password,
+          });
 
         if (error) {
           Alert.alert('Login failed', error.message);
@@ -68,10 +206,11 @@ export default function AuthScreen({ onAuthenticated }: Props) {
 
         onAuthenticated();
       } else {
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password,
-        });
+        const { data, error } =
+          await supabase.auth.signUp({
+            email: email.trim(),
+            password,
+          });
 
         if (error) {
           Alert.alert('Sign up failed', error.message);
@@ -88,7 +227,10 @@ export default function AuthScreen({ onAuthenticated }: Props) {
         }
       }
     } catch (error) {
-      Alert.alert('Something went wrong', 'Please try again.');
+      Alert.alert(
+        'Something went wrong',
+        'Please try again.'
+      );
       console.error('Auth error:', error);
     } finally {
       setLoading(false);
@@ -98,7 +240,9 @@ export default function AuthScreen({ onAuthenticated }: Props) {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={
+        Platform.OS === 'ios' ? 'padding' : undefined
+      }
     >
       <View style={styles.content}>
         <View style={styles.logoCircle}>
@@ -119,7 +263,34 @@ export default function AuthScreen({ onAuthenticated }: Props) {
               : 'Create an account to manage your orders.'}
           </Text>
 
+          <Pressable
+            style={({ pressed }) => [
+              styles.googleButton,
+              pressed && styles.buttonPressed,
+              googleLoading && styles.disabledButton,
+            ]}
+            onPress={handleGoogleLogin}
+            disabled={googleLoading || loading}
+          >
+            <Text style={styles.googleIcon}>G</Text>
+
+            <Text style={styles.googleButtonText}>
+              {googleLoading
+                ? 'Connecting...'
+                : 'Continue with Google'}
+            </Text>
+          </Pressable>
+
+          <View style={styles.dividerRow}>
+            <View style={styles.divider} />
+            <Text style={styles.dividerText}>
+              OR
+            </Text>
+            <View style={styles.divider} />
+          </View>
+
           <Text style={styles.label}>Email</Text>
+
           <TextInput
             style={styles.input}
             placeholder="Enter your email"
@@ -132,6 +303,7 @@ export default function AuthScreen({ onAuthenticated }: Props) {
           />
 
           <Text style={styles.label}>Password</Text>
+
           <TextInput
             style={styles.input}
             placeholder="Enter your password"
@@ -149,7 +321,7 @@ export default function AuthScreen({ onAuthenticated }: Props) {
               loading && styles.disabledButton,
             ]}
             onPress={handleAuth}
-            disabled={loading}
+            disabled={loading || googleLoading}
           >
             <Text style={styles.primaryButtonText}>
               {loading
@@ -162,12 +334,15 @@ export default function AuthScreen({ onAuthenticated }: Props) {
 
           <Pressable
             style={styles.switchButton}
-            onPress={() => setIsLogin((current) => !current)}
+            onPress={() =>
+              setIsLogin((current) => !current)
+            }
           >
             <Text style={styles.switchText}>
               {isLogin
                 ? "Don't have an account? "
                 : 'Already have an account? '}
+
               <Text style={styles.switchTextBold}>
                 {isLogin ? 'Create one' : 'Sign in'}
               </Text>
@@ -237,6 +412,44 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontSize: 14,
     marginBottom: 22,
+  },
+  googleButton: {
+    height: 52,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    backgroundColor: '#FFFFFF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  googleIcon: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: '#4285F4',
+    marginRight: 10,
+  },
+  googleButtonText: {
+    color: '#111827',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  divider: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E5E7EB',
+  },
+  dividerText: {
+    marginHorizontal: 12,
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '600',
   },
   label: {
     fontSize: 14,
